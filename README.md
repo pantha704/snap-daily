@@ -166,6 +166,8 @@ Two identical dumps in a row with a blocker on screen → Back, then check the p
 
 Holds: pre-send miss → `state/pending` + 5 min watcher. One run. PIN restore on normal exit & SIGTERM, only if this run cleared it. Proof miss ⊥ queued. `stayon` off on exit.
 
+Offline: ! nothing but snap delivery & Telegram needs net. Clock, unlock, taps, screenshots = local. No net at 05:00 → ⊥ taps, `state/pending` = `offline`, exit `2`, watcher retries every 5 min → snap goes when net returns, same day. One deduped `queued: phone offline` notice spooled. Undeliverable Telegram → `state/tgspool/` (max 20, oldest dropped), flushed by watcher. Exit `2` ⊥ spool a log per retry. `SNAP_ONLINE_HOSTS` = probe hosts; `SNAP_SKIP_ONLINE_CHECK=1` skips probe.
+
 ⊥ hold: `kill -9` between PIN clear & restore → phone stays unlocked. No `Snap Sent` / `Delivered` → day not marked, not retried, next 05:00 is next try. Watcher idle unless `pending` exists. Path B idle if phone off network. Empty Compose dump → trust screenshot, not the XML.
 
 ## Security

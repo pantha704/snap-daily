@@ -121,6 +121,8 @@ def should_queue(reason: str) -> bool:
         return False
     if reason.startswith("stuck"):
         return True
+    if reason == "offline":
+        return True
     return reason in {
         "no shutter",
         "no Send To",
@@ -421,6 +423,17 @@ def ist_today():
     return datetime.now(IST).strftime("%Y%m%d")
 
 
+def phone_online() -> bool:
+    """Telegram or Snapchat reachable from the phone. A cheap two-host probe."""
+    for host in os.environ.get(
+        "SNAP_ONLINE_HOSTS", "https://api.telegram.org/ https://www.snapchat.com/"
+    ).split():
+        r = adb_sh(f"curl -sS -o /dev/null --max-time 8 {host}", timeout=20)
+        if r.returncode == 0:
+            return True
+    return False
+
+
 def mark_pending(reason: str):
     STATE.mkdir(parents=True, exist_ok=True)
     PENDING.write_text(f"{ist_today()} {reason}\n")
@@ -551,6 +564,11 @@ def run():
             log("adb connect — queued")
             return 2
         connected = True
+        if os.environ.get("SNAP_SKIP_ONLINE_CHECK") != "1" and not phone_online():
+            log("phone offline — queued, no taps")
+            mark_pending("offline")
+            send_telegram_text("snap daily queued: phone offline")
+            return 2
         wake()
         ok, cleared = unlock_if_needed(pin)
         if not ok:

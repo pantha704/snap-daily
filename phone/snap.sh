@@ -222,6 +222,30 @@ shot() {
   fi
 }
 
+spool_text() {
+  mkdir -p "$STATE/tgspool"
+  msg=$1
+  # same notice already waiting? do not pile up one per retry
+  for f in "$STATE/tgspool"/*.txt; do
+    [ -f "$f" ] || continue
+    if [ "$(cat "$f" 2>/dev/null)" = "$msg" ]; then
+      return 0
+    fi
+  done
+  printf '%s\n' "$msg" > "$STATE/tgspool/$(date -u +%Y%m%dT%H%M%SZ)-$$.txt"
+  # keep the spool small: drop the oldest beyond 20
+  n=0
+  for f in "$STATE/tgspool"/*.txt; do
+    [ -f "$f" ] || continue
+    n=$((n + 1))
+  done
+  if [ "$n" -gt 20 ]; then
+    for f in $(ls -1t "$STATE/tgspool"/*.txt 2>/dev/null | tail -n +21); do
+      rm -f "$f"
+    done
+  fi
+}
+
 tg_photo() {
   cap=$1
   png=$2
@@ -233,7 +257,12 @@ tg_photo() {
     -F "caption=$cap" \
     -F "photo=@$png" \
     "https://api.telegram.org/bot${tok}/sendPhoto" || true)
-  echo "$resp" | grep -q '"ok":true' && log "telegram photo ok" || log "telegram photo fail"
+  if echo "$resp" | grep -q '"ok":true'; then
+    log "telegram photo ok"
+  else
+    log "telegram photo fail — spooled"
+    spool_text "$cap"
+  fi
 }
 
 fail() {
@@ -251,6 +280,8 @@ fail() {
   fi
   if [ -f "$d/screen.png" ]; then
     tg_photo "snap daily FAIL: $msg" "$d/screen.png"
+  else
+    spool_text "snap daily FAIL: $msg"
   fi
   exit "$code"
 }
@@ -361,6 +392,21 @@ ensure_snap() {
 }
 
 [ "${SNAP_SELFTEST:-0}" = 1 ] && selftest
+
+online() {
+  for h in ${SNAP_ONLINE_HOSTS:-https://api.telegram.org/ https://www.snapchat.com/}; do
+    /system/bin/curl -sS -o /dev/null --max-time 8 "$h" >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+
+# Offline: no taps, no burned day. One deduped notice, then the */5 watcher retries.
+if [ "${SNAP_SKIP_ONLINE_CHECK:-0}" != 1 ] && ! online; then
+  log "offline — queued, no taps"
+  printf '%s offline\n' "$(today)" > "$STATE/pending"
+  spool_text "snap daily queued: phone offline — will send when the network is back"
+  exit 2
+fi
 
 wake
 refresh || true
