@@ -84,19 +84,25 @@ pick_dismiss() {
 }
 
 selftest() {
-  fix=$BASE/fixtures/find_friends.xml
-  [ -f "$fix" ] || { echo "missing fixture"; exit 1; }
-  DUMP=$fix
-  dump_nodes "$fix"
+  tmp=$BASE/state/selftest.xml
+  mkdir -p "$BASE/state"
+  cat > "$tmp" <<'XML'
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0"><node index="0" text="Find Friends" resource-id="" class="android.widget.TextView" package="com.snapchat.android" content-desc="" checkable="false" checked="false" clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[60,300][400,360]" drawing-order="0" hint=""/><node index="1" text="" resource-id="" class="android.widget.FrameLayout" package="com.snapchat.android" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[45,1675][1035,1831]" drawing-order="1" hint=""/><node index="2" text="" resource-id="" class="android.widget.Button" package="com.snapchat.android" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[293,2182][786,2305]" drawing-order="2" hint=""/></hierarchy>
+XML
+  DUMP=$tmp
+  dump_nodes "$tmp"
   got=$(pick_dismiss || true)
-  echo "find-friends dismiss: $got"
+  echo "sheet dismiss: $got"
   echo "$got" | grep -q "2243" || { echo "pill miss: $got"; exit 1; }
   echo "$got" | grep -q "1753" && { echo "friend row picked"; exit 1; }
-  printf 'Not now\t\t100\t2100\t200\t80\ttrue\n\t\t539\t2243\t493\t123\ttrue\n' > "$NODES"
-  DUMP=/dev/null
+  cat > "$tmp" <<'XML'
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0"><node index="0" text="Not now" resource-id="" class="android.widget.Button" package="com.snapchat.android" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[0,2060][200,2140]" drawing-order="0" hint=""/><node index="1" text="" resource-id="" class="android.widget.Button" package="com.snapchat.android" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[293,2182][786,2305]" drawing-order="1" hint=""/></hierarchy>
+XML
+  dump_nodes "$tmp"
   got=$(pick_dismiss || true)
   echo "labeled dismiss: $got"
   echo "$got" | grep -q "^100 2100" || { echo "label miss: $got"; exit 1; }
+  rm -f "$tmp"
   echo "selftest ok"
   exit 0
 }
