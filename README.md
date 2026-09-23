@@ -6,17 +6,15 @@ No token, no PIN, no chat id, no tailnet IP in this repo.
 
 ## Package
 
-Magisk module. Possible. Right layer.
+Magisk module lives in its own repo: **https://github.com/pantha704/snap-daily-magisk** (flashable zip in its Releases). This repo = the cycle scripts, both run paths, and the boot-persist loop.
 
 LSPosed / Zygisk / vector: possible, wrong. Those hooks run inside Snapchat. This job taps from outside (`input` + `uiautomator`). In-app hook breaks on Snapchat updates & can flag the account. ⊥ ship that.
 
 Module ≠ Wi-Fi / ADB / Tailscale loop. That loop stays a separate supervisor. Two Wi-Fi loops fight.
 
-## What it installs
+## What the module installs
 
-Magisk app flash of `magisk/` → module id `snap-daily`.
-
-Installs:
+Separate repo: https://github.com/pantha704/snap-daily-magisk
 
 - `snap.sh` `run.sh` `watch.sh` → `/data/adb/snap_daily/`
 - crontab → `/data/adb/snap_daily/crontabs/root`
@@ -29,11 +27,7 @@ Does not install:
 - LSPosed hook
 - Snapchat
 
-`uninstall.sh` deletes the three scripts + crontab. Leaves `secrets/`. Does not kill `crond`.
-
 ⊥ also keep `/data/adb/service.d/10-snap-crond.sh` after module install. Two boot hooks can start two `crond` → two snaps.
-
-Recovery flash needs Magisk's own `module_installer.sh` as `META-INF/com/google/android/update-binary`. In-app install does not. Do not vendor that script here (Magisk license ≠ this MIT tree).
 
 ## Root
 
