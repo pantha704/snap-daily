@@ -102,16 +102,29 @@ XML
   got=$(pick_dismiss || true)
   echo "labeled dismiss: $got"
   echo "$got" | grep -q "^100 2100" || { echo "label miss: $got"; exit 1; }
+  # blocker gate: a plain camera screen is not a blocker, a wide sheet button is
+  cat > "$tmp" <<'XML'
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0"><node index="0" text="" resource-id="" class="android.view.View" package="com.snapchat.android" content-desc="Camera Capture" checkable="false" checked="false" clickable="true" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[407,1846][672,2111]" drawing-order="0" hint=""/><node index="1" text="" resource-id="" class="android.view.View" package="com.snapchat.android" content-desc="Chat" checkable="false" checked="false" clickable="true" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[238,2197][438,2338]" drawing-order="1" hint=""/></hierarchy>
+XML
+  DUMP=$tmp
+  dump_nodes "$tmp"
+  blocker_present && { echo "camera read as blocker"; exit 1; }
+  echo "camera: not a blocker"
+  cat > "$tmp" <<'XML'
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0"><node index="0" text="Find Friends" resource-id="" class="android.widget.TextView" package="com.snapchat.android" content-desc="" checkable="false" checked="false" clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[60,300][400,360]" drawing-order="0" hint=""/><node index="1" text="" resource-id="" class="android.widget.FrameLayout" package="com.snapchat.android" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[45,1675][1035,1831]" drawing-order="1" hint=""/></hierarchy>
+XML
+  dump_nodes "$tmp"
+  blocker_present || { echo "wide sheet button missed"; exit 1; }
+  echo "sheet button: blocker"
   rm -f "$tmp"
   echo "selftest ok"
   exit 0
 }
 
-[ "${SNAP_SELFTEST:-0}" = 1 ] && selftest
 
 trap restore EXIT INT TERM
 
-if [ -f "$STATE/last_ok" ] && [ "$(tr -d '\n' < "$STATE/last_ok")" = "$(today)" ] && [ "${SNAP_FORCE:-0}" != 1 ]; then
+if [ "${SNAP_SELFTEST:-0}" != 1 ] && [ -f "$STATE/last_ok" ] && [ "$(tr -d '\n' < "$STATE/last_ok")" = "$(today)" ] && [ "${SNAP_FORCE:-0}" != 1 ]; then
   log "already sent today IST"
   rm -f "$STATE/pending"
   exit 0
@@ -242,12 +255,35 @@ fail() {
   exit "$code"
 }
 
+blocker_present() {
+  if [ -f "$DUMP" ] && grep -q "Device not compatible" "$DUMP"; then
+    return 0
+  fi
+  /system/xbin/busybox awk -F '\t' '
+    {
+      text = tolower($1); desc = tolower($2)
+      cy = $4 + 0; w = $5 + 0; h = $6 + 0; click = $7
+      lab = (text != "" ? text : desc)
+      if (lab == "not now" || lab == "skip" || lab == "no thanks" || lab == "maybe later" || lab == "close" || lab == "cancel" || lab == "got it" || lab == "later" || lab == "deny" || lab == "not interested" || lab == "dismiss") { found = 1 }
+      if (text == "" && desc == "" && click == "true" && w >= 350 && h >= 100 && cy >= 1600) { found = 1 }
+    }
+    END { exit (found ? 0 : 1) }
+  ' "$NODES"
+}
+
+restart_snap() {
+  /system/bin/am force-stop "$SNAP_PKG" >/dev/null 2>&1 || true
+  sleep 1
+  ensure_snap
+}
+
 wait_landmark() {
   name=$1
   tries=$2
-  reopens=0
   prev=""
   stuck=0
+  backs=0
+  restarts=0
   i=0
   while [ "$i" -lt "$tries" ]; do
     refresh || true
@@ -273,26 +309,42 @@ wait_landmark() {
     if [ "$sig" = "$prev" ]; then stuck=$((stuck + 1)); else stuck=0; fi
     prev=$sig
     if [ "$stuck" -ge 2 ]; then
-      log "stuck — back once"
-      /system/bin/input keyevent 4
-      sleep 0.6
-      refresh || true
-      dis=$(pick_dismiss || true)
-      line=$(landmark_line "$name" || true)
-      if [ -z "$dis" ] && [ -n "$line" ]; then
-        log "back landed on expected page"
-        printf '%s\n' "$line"
-        return 0
-      fi
-      if [ "$reopens" -lt 2 ]; then
-        reopens=$((reopens + 1))
-        log "not expected page — reopen snap"
-        /system/bin/am force-stop com.anbu.shimeji.desktoppet >/dev/null 2>&1 || true
-        /system/bin/am start -n "$SNAP_PKG/com.snap.mushroom.MainActivity" >/dev/null 2>&1 || true
-        sleep 2
+      if ! blocker_present; then
+        log "idle, no blocker — keep waiting for $name"
+        stuck=0
+        prev=""
+        sleep 0.7
+        i=$((i + 1))
+        continue
       fi
       stuck=0
       prev=""
+      if [ "$backs" -lt 4 ]; then
+        backs=$((backs + 1))
+        log "back $backs/4 for $name"
+        /system/bin/input keyevent 4
+        sleep 0.7
+        refresh || true
+        dis=$(pick_dismiss || true)
+        line=$(landmark_line "$name" || true)
+        if [ -z "$dis" ] && [ -n "$line" ]; then
+          log "back landed on expected page"
+          printf '%s\n' "$line"
+          return 0
+        fi
+        i=$((i + 1))
+        continue
+      fi
+      if [ "$restarts" -lt 2 ]; then
+        restarts=$((restarts + 1))
+        backs=0
+        log "4 backs, no $name — restart snap"
+        restart_snap
+        i=$((i + 1))
+        continue
+      fi
+      log "4 backs and a restart, no $name — giving up"
+      return 1
     fi
     sleep 0.7
     i=$((i + 1))
@@ -307,6 +359,8 @@ ensure_snap() {
   /system/bin/am start -n "$SNAP_PKG/com.snap.mushroom.MainActivity" >/dev/null 2>&1 || true
   sleep 2
 }
+
+[ "${SNAP_SELFTEST:-0}" = 1 ] && selftest
 
 wake
 refresh || true
@@ -367,12 +421,12 @@ else
   [ -n "$fire" ] || fail "no fire chip" 7
   tap_line "$fire"
   sleep 0.8
-  sel=$(wait_landmark selectall 8 || true)
+  sel=$(wait_landmark selectall 12 || true)
   [ -n "$sel" ] || fail "no Select All" 8
   tap_line "$sel"
   sleep 0.8
 fi
-snd=$(wait_landmark sendbtn 8 || true)
+snd=$(wait_landmark sendbtn 12 || true)
 [ -n "$snd" ] || fail "no Send" 9
 if [ "${SNAP_DRY:-0}" = 1 ]; then
   log "dry run — stopping before Send"

@@ -311,11 +311,46 @@ def ensure_snap():
     time.sleep(2)
 
 
+DISMISS_ONLY = {
+    "not now", "skip", "no thanks", "maybe later", "close", "cancel",
+    "got it", "later", "deny", "not interested", "dismiss",
+}
+
+
+def blocker_present(nodes) -> bool:
+    """True when a sheet or dialog is covering the screen.
+
+    A named dismiss word, the Play-services title, or an unnamed wide button in
+    the lower band. Used only to decide whether pressing Back is warranted.
+    """
+    if compat_ok(nodes):
+        return True
+    for n in nodes:
+        lab = (n.get("text") or n.get("desc") or "").strip().lower()
+        if lab in DISMISS_ONLY:
+            return True
+        if lab:
+            continue
+        if not n.get("click"):
+            continue
+        if (n.get("w") or 0) >= 350 and (n.get("h") or 0) >= 100 and (n.get("cy") or 0) >= 1600:
+            return True
+    return False
+
+
+def restart_snap():
+    """Four Backs did not reach the next page. Close Snapchat and open it again."""
+    adb_sh("am force-stop com.snapchat.android")
+    time.sleep(1)
+    ensure_snap()
+
+
 def wait_nodes(pred, tries=12, delay=0.7):
     last = []
     prev = None
     stuck = 0
-    reopens = 0
+    backs = 0
+    restarts = 0
     for _ in range(tries):
         xml = dump_ui()
         nodes = parse_nodes(xml)
@@ -335,25 +370,36 @@ def wait_nodes(pred, tries=12, delay=0.7):
         sig = tuple((n["text"], n["desc"], n["cy"]) for n in nodes if n["text"] or n["desc"])
         stuck = stuck + 1 if sig == prev else 0
         prev = sig
-        if stuck == 2:
-            log("stuck — back once")
-            adb_sh("input keyevent 4")
-            time.sleep(0.6)
-            nodes = parse_nodes(dump_ui())
-            last = nodes
-            if pred(nodes) and not overlay_dismiss(nodes):
-                log("back landed on expected page")
-                return nodes
-            if reopens < 2:
-                reopens += 1
-                log("not expected page — reopen snap")
-                ensure_snap()
+        if stuck >= 2:
+            if not blocker_present(nodes):
+                log("idle, no blocker — keep waiting")
+                stuck = 0
+                prev = None
+                time.sleep(delay)
+                continue
             stuck = 0
             prev = None
-            continue
+            if backs < 4:
+                backs += 1
+                log(f"back {backs}/4")
+                adb_sh("input keyevent 4")
+                time.sleep(0.7)
+                nodes = parse_nodes(dump_ui())
+                last = nodes
+                if pred(nodes) and not overlay_dismiss(nodes):
+                    log("back landed on expected page")
+                    return nodes
+                continue
+            if restarts < 2:
+                restarts += 1
+                backs = 0
+                log("4 backs without the next page — restart snap")
+                restart_snap()
+                continue
+            log("4 backs and a restart without the next page — giving up")
+            return last
         time.sleep(delay)
     return last
-
 
 def announce_start(wait_s=12):
     """Tiny dialog APK: 3.2.1 + OK. Auto-finishes; cron does not hang."""
@@ -566,13 +612,13 @@ def run():
                 return fail("no fire chip", 7)
             tap_node(fire)
             time.sleep(0.8)
-            nodes = wait_nodes(lambda ns: find(ns, lambda n: n["desc"] == "Select All Button"), tries=8)
+            nodes = wait_nodes(lambda ns: find(ns, lambda n: n["desc"] == "Select All Button"), tries=12)
             sel = find(nodes, lambda n: n["desc"] == "Select All Button")
             if not sel:
                 return fail("no Select All", 8)
             tap_node(sel)
             time.sleep(0.8)
-        nodes = wait_nodes(lambda ns: find(ns, lambda n: n["desc"] == "Send"), tries=8)
+        nodes = wait_nodes(lambda ns: find(ns, lambda n: n["desc"] == "Send"), tries=12)
         snd = find(nodes, lambda n: n["desc"] == "Send" and n["cx"] > 800) or find(
             nodes, lambda n: n["desc"] == "Send"
         )

@@ -160,7 +160,7 @@ Dismiss order:
 
 ⊥ dismiss via Send, Send To, shutter, Select All, Add, nav bar.
 
-Same UI twice → Back once. Expected landmark visible & uncovered → continue. Else reopen Snapchat. ≤ 2 reopens. Still stuck → fail with on-screen title + queue.
+Two identical dumps in a row with a blocker on screen → Back, then check the page again. Back only fires when a blocker is actually there: a named dismiss word, the Play-services title, or an unnamed wide button (width ≥ 350, height ≥ 100) in the lower band (cy ≥ 1600). An idle screen with no blocker is waited on, not backed out of. Max **4** Backs. If the page is still wrong after 4, Snapchat is force-stopped and reopened (max **2** restarts), then the step fails with the on-screen title and queues. After every Back the landmark is re-checked, so a Back that lands correctly continues the run immediately.
 
 ## Failsafe
 
