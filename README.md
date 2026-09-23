@@ -27,7 +27,7 @@ Does not install:
 - LSPosed hook
 - Snapchat
 
-⊥ also keep `/data/adb/service.d/10-snap-crond.sh` after module install. Two boot hooks can start two `crond` → two snaps.
+Fallback `/data/adb/service.d/10-snap-crond.sh` while the module's boot step is unproven. Both starters check `pidof crond` first, and `snap.sh` holds `state/runlock`, so two `crond` cannot double-send. Remove the fallback only after a reboot shows the module started `crond` itself. ⊥ delete the fallback first — a reboot then leaves no `crond` and no snap.
 
 ## Root
 
