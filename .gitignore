@@ -1,0 +1,12 @@
+secrets/
+state/
+runs/
+*.png
+*.log
+.env
+.env.*
+!.env.example
+__pycache__/
+*.apk
+uidump.xml
+nodes.tsv
