@@ -374,6 +374,15 @@ else
 fi
 snd=$(wait_landmark sendbtn 8 || true)
 [ -n "$snd" ] || fail "no Send" 9
+if [ "${SNAP_DRY:-0}" = 1 ]; then
+  log "dry run — stopping before Send"
+  png=$RUNS/dry_$stamp.png
+  shot "$png"
+  tg_photo "snap daily DRY $stamp — reached Send, nothing sent" "$png"
+  /system/bin/am force-stop "$SNAP_PKG" >/dev/null 2>&1 || true
+  log "dry run done"
+  exit 0
+fi
 tap_line "$snd"
 sleep 2.5
 refresh || true
