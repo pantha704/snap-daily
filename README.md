@@ -128,6 +128,8 @@ Idle on test phone: `crond` ~748 KB RSS. Tree < 200 KB before shots. Shot ~0.5 M
 
 ## Cycle
 
+Dry run first: `SNAP_DRY=1 sh /data/adb/snap_daily/run.sh`. It stops before Send and writes no `last_ok` / `pending`. Safe on a real phone.
+
 1. Lock. Second run exits. Busy lock ≠ success.
 2. `state/last_ok` = today Asia/Kolkata → exit. `SNAP_FORCE=1` overrides.
 3. Wake = keyevent `224`. ⊥ power key (toggles screen off). `stayon` cleared on exit.
