@@ -1,181 +1,191 @@
 # snap-daily
 
-Daily Snapchat camera send from a phone you own. One snap per local day. Default recipient is the fire chip beside All, then Select All, then Send. No caption unless you set one for that run.
+Camera snap, 1 / day, 05:00 Asia/Kolkata. Tested: rooted OnePlus 7T (HD1901) + Magisk.
 
-Tested on a rooted OnePlus 7T (HD1901), Magisk, wireless ADB on port 5555, userspace Tailscale. Not tested on an unrooted phone. Not tested on other models.
+No token, no PIN, no chat id, no tailnet IP in this repo.
 
-This repository has no bot token, no lock PIN, no chat id, and no tailnet address. Those stay on the phone or the operator host. See [Security](#security).
+## Package
 
-## Root is required
+Magisk module. Possible. Right layer.
 
-Yes. A rooted phone is a requirement for this system, not an optional extra.
+LSPosed / Zygisk / vector: possible, wrong. Those hooks run inside Snapchat. This job taps from outside (`input` + `uiautomator`). In-app hook breaks on Snapchat updates & can flag the account. ⊥ ship that.
 
-The job runs at 05:00 even if the screen is locked. Clearing the lock PIN and putting it back is `locksettings` through root. A normal ADB shell cannot clear a PIN that is already set. Without that step the taps hit the lock screen and the cycle fails.
+Module ≠ Wi-Fi / ADB / Tailscale loop. That loop stays a separate supervisor. Two Wi-Fi loops fight.
 
-The on-phone scheduler also lives under `/data/adb` and is started from Magisk `service.d`. That path is root-only.
+## What it installs
 
-Root does not log into Snapchat for you, and it does not remove Snapchat's own popups. The session must already exist. Popups are handled by the cycle script, described below.
+Magisk app flash of `magisk/` → module id `snap-daily`.
 
-An already-unlocked phone can be tapped over ADB without root. That is not a supported path here, because the morning run must still work when the phone is locked.
+Installs:
 
-## Ground-up requirements
+- `snap.sh` `run.sh` `watch.sh` → `/data/adb/snap_daily/`
+- crontab → `/data/adb/snap_daily/crontabs/root`
+- `service.sh` starts `crond` at late_start if `crond` absent
 
-Phone
+Does not install:
 
-- A phone you own. Test device: rooted OnePlus 7T.
-- Magisk. The test phone used a Magisk late-start service directory.
-- Snapchat installed and already logged in. Package `com.snapchat.android`.
-- Camera and microphone granted to Snapchat (`pm grant`).
-- BusyBox `crond` and `awk` for the on-phone path (`/system/xbin` on the test phone).
-- `/system/bin` tools: `sh`, `input`, `uiautomator`, `screencap`, `locksettings`, `svc`, `settings`, `cmd`, `am`, `pm`, `curl`, `dumpsys`.
-- A lock PIN file, mode 600, only on the device. Required when the screen may be locked.
-- Network at send time. Snapchat has to deliver the snap. Telegram has to take the log. The clock itself does not need network.
-- No overlay sitting on the shutter. The test phone had a desktop-pet overlay. The script force-stops the package in `SNAP_OVERLAY` before capture. Default name is `com.anbu.shimeji.desktoppet`. Set the variable empty-safe by changing it if you do not have that app.
+- PIN, bot token, chat id (you add those)
+- Wi-Fi watchdog, `adbd` :5555, `tailscaled`
+- LSPosed hook
+- Snapchat
 
-Operator host, only if you use path B
+`uninstall.sh` deletes the three scripts + crontab. Leaves `secrets/`. Does not kill `crond`.
 
-- Linux host with `python3`, `adb`, and a cron daemon.
-- A route to the phone. On the test setup that route is Tailscale, then `adb connect <phone>:5555`.
-- The phone must already be reviving Wi-Fi, ADB, and Tailscale by itself. Path B cannot heal a phone that is dark on the network.
+⊥ also keep `/data/adb/service.d/10-snap-crond.sh` after module install. Two boot hooks can start two `crond` → two snaps.
 
-Both paths
+Recovery flash needs Magisk's own `module_installer.sh` as `META-INF/com/google/android/update-binary`. In-app install does not. Do not vendor that script here (Magisk license ≠ this MIT tree).
 
-- A Telegram bot token in a file that is not in git. One chat id in another file. The cycle posts a photo and a text log there.
-- Optional announce activity (`SNAP_ANNOUNCE=package/.Activity`). If set, it is shown before taps and must finish on its own. If unset, the cycle skips it.
+## Root
 
-Do not install Play Integrity, keybox, or attestation-spoof modules for this job. They are unrelated, and they are the wrong fix for a camera tap.
+! Root. `locksettings` clear/set PIN needs it. `/data/adb` needs it. Unrooted ADB tap ⊥ supported. 05:00 must work on a locked screen.
 
-## Boot persistence
+Root ⊥ log you into Snapchat. Session must already exist.
 
-Path A can fire with no PC. Path B still needs the phone to come back after a reboot with Wi-Fi, ADB 5555, and Tailscale up. Both of those are the phone's job, not the VPS's.
+## Fire group
 
-Use one supervisor. On the test phone it is a 5-second loop started at Magisk late-start. Example: `phone/persist/run.sh`. Boot hook: `phone/persist/launch.sh`.
+! Before first run, in Snapchat:
 
-What the loop keeps alive
+1. Create a group.
+2. Name / emoji = `🔥`.
+3. Add the people who should get the daily snap.
 
-1. Wi-Fi. If `wlan0` is not UP, `svc wifi enable`. Do not add a second Wi-Fi watchdog. One loop is enough. Extra copies fight each other.
-2. Wireless ADB on port 5555. Set `persist.adb.tcp.port` and `service.adb.tcp.port` to `5555`. If `adbd` is not running, start it. Do not stop `adbd`. Stopping it removes the only remote path.
-3. Tailscale. Userspace `tailscaled`, state file on disk (`tailscaled.state`). A reboot must not require a new login. The daemon is started only if it is not already running. The Android Tailscale app UI does not reflect a userspace daemon, and stopping the app does not stop that daemon.
+Default send → Send To → `🔥` chip beside All → Select All → Send.
 
-Revive across boots
+That group = the recipient list. Change members in Snapchat. No code change.
 
-- Primary hook: `/data/adb/service.d/00-persist.sh` runs the launcher at late-start.
-- Backup hook: one Magisk module `service.sh` that execs the same launcher. Same script, not a second design.
-- Do not add a third copy. Do not leave an executable backup inside `service.d`. Magisk runs every executable in that directory.
-- Pidfile check must read `/proc/$PID/cmdline` and require `persist/run.sh`. After reboot Android reuses PIDs. A stale pidfile that points at some other process makes the supervisor exit and the phone stays off the tailnet.
-- The snap cron has its own boot hook, `phone/10-snap-crond.sh`, installed as `/data/adb/service.d/10-snap-crond.sh`. It starts `crond` only if `crond` is absent. It is not a substitute for the Wi-Fi / ADB / Tailscale loop.
+One person instead: `secrets/to` or `SNAP_TO` = exact display name, one line. Delete file → back to `🔥` group.
 
-After a reboot, path B is usable only when all three are up: Wi-Fi associated, `adbd` listening on 5555, Tailscale running with the old state file. Probe the tailnet address first. If that is dark and you are on the same LAN, probe the LAN address. If the supervisor pidfile is stale, remove it and run the launcher again. Do not put those addresses in this repo.
+## Requirements
 
-## Two ways to run
+Phone ! 
 
-Pick one. Running both sends two snaps.
+- rooted, Magisk. Tested OnePlus 7T only.
+- Snapchat `com.snapchat.android`, already logged in.
+- `pm grant` CAMERA + RECORD_AUDIO.
+- BusyBox `crond` + `awk` (`/system/xbin` on test phone).
+- `/system/bin`: `sh` `input` `uiautomator` `screencap` `locksettings` `svc` `settings` `cmd` `am` `pm` `curl` `dumpsys`.
+- `secrets/pin` mode 600, on device only, if screen may be locked.
+- network at send time. Clock itself needs no network.
+- no overlay on shutter. `SNAP_OVERLAY` default `com.anbu.shimeji.desktoppet`. Force-stop before capture.
 
-### Path A — cron on the phone
+Path B host ! only if VPS drives the phone:
 
-This is the path that does not depend on a PC.
+- `python3` `adb` cron
+- route to phone. Test setup = Tailscale, then `adb connect <phone>:5555`
+- phone must already revive Wi-Fi + ADB + Tailscale. VPS cannot heal a dark phone.
 
-- Scripts: `phone/snap.sh`, `phone/run.sh`, `phone/watch.sh`
-- Install under `/data/adb/snap_daily/`
-- Crontab: `phone/crontabs/root`
-- Schedule: `0 5 * * *` in `TZ=Asia/Kolkata` (05:00 IST). Watcher `*/5` runs only when `state/pending` exists and today is not already marked done.
-- `run.sh` always sends the text log after the cycle. `snap.sh` sends the photo when it has one.
-- Secrets on the phone, mode 600, not in this repo: `secrets/pin`, `secrets/token`, `secrets/chats`, optional `secrets/to`
-- Start `crond` now and from the boot hook. A reboot is not required to turn the job on. The boot hook only brings `crond` back after a later reboot.
+Both:
 
-Idle cost on the test phone: `crond` about 748 KB RSS. The script tree is under 200 KB before screenshots. Each saved shot is about 0.5 MB. There is no cap in `runs/`.
+- Telegram token + one chat id, files not in git.
+- `SNAP_ANNOUNCE=package/.Activity` ? optional. Unset → skip.
 
-### Path B — cron on a VPS, ADB into the phone
+⊥ Play Integrity / keybox / attestation-spoof modules. Wrong fix for a camera tap.
 
-The host runs `vps/snap_daily.py`. The phone only receives ADB. This path needs the boot persistence above, or the morning job dies as "phone offline".
+## Boot persist (path B, and remote heal)
 
-- Set `SNAP_SERIAL` to `<tailnet-or-lan-ip>:5555`. There is no default host in the script.
-- Pin, bot token, and chat id come from the paths in `.env.example`.
-- Cron the wrapper `vps/snap_daily.sh` at 05:00 in Asia/Kolkata. A UTC host uses `30 23 * * *`.
-- Watcher `vps/snap_watch.sh` every 5 minutes. It exits immediately unless `state/pending` exists.
-- `SNAP_DAILY_SELFTEST=1 python3 vps/snap_daily.py` checks the parser and the queue rules. It does not touch a phone.
-- If path A is enabled, disable this cron. Do not leave both armed.
+One loop. Example `phone/persist/run.sh`. Boot hook `phone/persist/launch.sh`.
 
-`SNAP_LOCAL=1` makes the Python script call shell commands directly instead of `adb`. That is how you would run the Python file on a phone that has Python. The tested on-phone runner is the shell script, because the test phone had no Python.
+Every 5s:
 
-## What one cycle does
+1. `wlan0` not UP → `svc wifi enable`. ⊥ second Wi-Fi watchdog.
+2. `adbd` on port `5555`. Set `persist.adb.tcp.port` + `service.adb.tcp.port`. Start `adbd` if down. ⊥ stop `adbd`.
+3. userspace `tailscaled`. State file on disk → reboot ⊥ new login. Start only if absent.
 
-1. Take the lock. A second run exits. A busy lock is not a success.
-2. If `state/last_ok` is already today's date in Asia/Kolkata, exit. One snap per day unless `SNAP_FORCE=1`.
-3. Wake the panel (`KEYCODE_WAKEUP`, 224). Do not use power. Power toggles the screen off. `stayon` is turned off in the exit trap.
-4. If the lock screen is up, verify the PIN, clear it, continue, and set the PIN again in the exit trap. If the phone was already unlocked, the PIN is not cleared.
-5. Optional announce activity, then force-stop the overlay package and open Snapchat `MainActivity`.
-6. Wait until the shutter (`content-desc` `Camera Capture`) or `Send To` is visible and not covered.
-7. If still on the camera, tap the shutter. Wait for `Send To`. Never tap Chat. Never tap Post Snap. Never tap Memories in this cycle.
-8. Recipient. See below.
-9. Tap Send (`content-desc` `Send`, right side of the screen).
-10. Screenshot. Reject a tiny black frame (under 80 KB) and try `screencap` again.
-11. Proof is the text `Snap Sent` or `Delivered` in the UI dump. A Chat tab, the inbox, or a toast you did not capture is not proof.
-12. Post the photo and, on path A, the text log.
-13. On proof, write `state/last_ok` and delete `state/pending`. On a proof miss after the Send tap, do not queue a retry. A retry can double-send.
+Revive across boots:
 
-Exit codes from the shell runner: `0` done or skipped, `3` lock, `5` no shutter, `6` no Send To, `7` no fire chip or no named row, `8` no Select All, `9` no Send, `10` Send was tapped but proof text was missing.
+- `/data/adb/service.d/00-persist.sh` = primary launcher
+- one Magisk module `service.sh` = same launcher, backup
+- ⊥ third copy. ⊥ extra executable backup in `service.d` (Magisk runs every executable there)
+- pidfile counts only if `/proc/$PID/cmdline` contains `persist/run.sh`. Recycled PID → supervisor exits → phone dark on tailnet.
 
-## Recipient
+After reboot, path B works only when Wi-Fi up + `adbd` :5555 + `tailscaled` on old state file. Probe tailnet first, LAN second. Stale pidfile → delete it, run launcher. ⊥ put live addresses in this repo.
 
-Default is the fire group. The script looks for the fire chip near the top of the Send To sheet, taps it, taps Select All, then taps Send.
+Snap cron boot = module `service.sh`. Not a substitute for the persist loop.
 
-To send to one person instead, put that exact display name in `secrets/to` (path A) or `SNAP_TO` (path B), one line, no extra words. The script types it into search and taps the row below the search field. Delete the file, or leave it empty, to go back to the fire group. The scheduled default on the test phone is the fire group. A name is a switch, not a hard-coded person.
+## Two run paths
+
+Pick one. Both armed → two snaps.
+
+### A — phone cron
+
+No PC.
+
+- scripts `phone/snap.sh` `phone/run.sh` `phone/watch.sh`
+- live dir `/data/adb/snap_daily/`
+- crontab `0 5 * * *` `TZ=Asia/Kolkata`. Watcher `*/5` only if `state/pending` exists & today not done.
+- `run.sh` → text log after every cycle. Photo when one exists.
+- secrets mode 600: `pin` `token` `chats` optional `to`
+- reboot ⊥ required to turn the job on. Boot hook only brings `crond` back later.
+
+Idle on test phone: `crond` ~748 KB RSS. Tree < 200 KB before shots. Shot ~0.5 MB. `runs/` has no cap.
+
+### B — VPS cron, ADB into phone
+
+`vps/snap_daily.py`. Phone only receives ADB. Needs the boot loop above.
+
+- `SNAP_SERIAL=<ip>:5555`. No default host.
+- pin / token / chat id from `.env.example` paths.
+- cron `vps/snap_daily.sh` at 05:00 Asia/Kolkata. UTC host: `30 23 * * *`.
+- `vps/snap_watch.sh` every 5 min. Exits unless `state/pending`.
+- `SNAP_DAILY_SELFTEST=1 python3 vps/snap_daily.py` → parser + queue rules. No phone.
+- path A on → this cron off.
+
+`SNAP_LOCAL=1` = Python calls shell, no `adb`. Tested on-phone runner = shell. Test phone had no Python.
+
+## Cycle
+
+1. Lock. Second run exits. Busy lock ≠ success.
+2. `state/last_ok` = today Asia/Kolkata → exit. `SNAP_FORCE=1` overrides.
+3. Wake = keyevent `224`. ⊥ power key (toggles screen off). `stayon` cleared on exit.
+4. Locked → verify PIN, clear, run, `set-pin` in exit trap. Already unlocked → PIN not cleared.
+5. Optional announce. Force-stop overlay. Open `com.snapchat.android` `MainActivity`.
+6. Wait for `Camera Capture` or `Send To`, uncovered.
+7. Still on camera → tap shutter. Wait `Send To`. ⊥ Chat. ⊥ Post Snap. ⊥ Memories.
+8. Recipient = `🔥` group, or `secrets/to`.
+9. Tap `Send`, right side (`cx` > 800).
+10. Screenshot. Reject PNG < 80 KB (black / secure frame). Retry `screencap`.
+11. Proof = text `Snap Sent` or `Delivered`. Chat tab, inbox, missed toast ⊥ proof.
+12. Photo + path A text log.
+13. Proof → write `last_ok`, delete `pending`. Proof miss after Send tap → ⊥ queue. Retry can double-send.
+
+Exit: `0` done/skip, `3` lock, `5` no shutter, `6` no Send To, `7` no fire chip / no named row, `8` no Select All, `9` no Send, `10` Send tapped, proof text missing.
 
 ## Popups
 
-Snapchat shows sheets that are not in any fixed list. Find Friends is one of them. Its dismiss control had no accessibility text.
+Sheet with no name still blocks. Find Friends dismiss had no accessibility text.
 
-A step is blocked when the next landmark is missing, a sheet covers that landmark, or the same UI is still there after two dumps.
+Blocked = next landmark missing | sheet covers it | same UI twice.
 
-Dismiss order
+Dismiss order:
 
-1. `OK` only when the title is `Device not compatible`.
-2. A labeled dismiss word: Not now, Skip, No thanks, Maybe later, Close, Cancel, Got it, Later, Deny, Don't allow.
-3. Otherwise the wide unlabeled footer pill. Width 400–800, height 70–180, vertical center 2000–2320 on a 1080x2400 screen. Do not tap the widest unlabeled node. Friend rows are wider and sit higher. Tapping one adds a person.
+1. `OK` only if title = `Device not compatible`.
+2. Word: Not now, Skip, No thanks, Maybe later, Close, Cancel, Got it, Later, Deny, Don't allow.
+3. Else wide unlabeled footer pill. Width 400–800, height 70–180, cy 2000–2320 on 1080x2400. ⊥ widest node. Friend rows ~990 px & higher. Tap one → adds a person.
 
-Never treat Send, Send To, the shutter, Select All, Add, or the nav bar as a dismiss control.
+⊥ dismiss via Send, Send To, shutter, Select All, Add, nav bar.
 
-If two dumps look the same: press Back once. If the expected landmark is then visible and uncovered, continue. If not, reopen Snapchat. At most twice. If it is still stuck, fail with the on-screen title and queue a retry.
+Same UI twice → Back once. Expected landmark visible & uncovered → continue. Else reopen Snapchat. ≤ 2 reopens. Still stuck → fail with on-screen title + queue.
 
 ## Failsafe
 
-Holds
+Holds: pre-send miss → `state/pending` + 5 min watcher. One run. PIN restore on normal exit & SIGTERM, only if this run cleared it. Proof miss ⊥ queued. `stayon` off on exit.
 
-- Pre-send miss writes `state/pending`. The 5-minute watcher reruns until today is marked done or the pending file is removed.
-- One run at a time.
-- PIN is restored on normal exit and on SIGTERM, and only if this run cleared it.
-- A proof miss is not queued, so a doubtful Send is not repeated all morning.
-- `stayon` is cleared on the way out.
-
-Does not hold
-
-- `kill -9` between PIN clear and PIN restore leaves the phone unlocked. SIGTERM is caught. SIGKILL is not.
-- If Snapchat never shows `Snap Sent` or `Delivered`, that day is not marked done and is not retried. The next scheduled morning run is the next attempt.
-- The watcher does nothing unless `state/pending` exists.
-- Path B does nothing if the phone is off the network. That is why the boot loop exists.
-- Compose screens often dump an empty accessibility tree. The screenshot is the real map. A black 15 KB PNG is a panel-off or secure-flag frame, not a successful shot.
+⊥ hold: `kill -9` between PIN clear & restore → phone stays unlocked. No `Snap Sent` / `Delivered` → day not marked, not retried, next 05:00 is next try. Watcher idle unless `pending` exists. Path B idle if phone off network. Empty Compose dump → trust screenshot, not the XML.
 
 ## Security
 
-Never commit
+⊥ commit: PIN, bot token, chat id, live tailnet/LAN/ADB serial, `runs/`, shots, UI dumps, `state/`.
 
-- The lock PIN
-- `TELEGRAM_BOT_TOKEN` or any bot token
-- The chat id file
-- Tailnet addresses, LAN addresses, or ADB serials of a live phone
-- `runs/`, screenshots, UI dumps, and `state/`
+`.gitignore` ignores `secrets/` `state/` `runs/` `.env`.
 
-`.env.example` shows the variable names only. `.gitignore` ignores `secrets/`, `state/`, `runs/`, and `.env`.
+Phone secret files mode 600, root. ⊥ `set -x` around PIN / token.
 
-The phone files that hold secrets must be mode 600 and owned by root. The cron log must not echo the PIN or the token. The scripts read those files and pass them to `locksettings` and `curl`. Do not `set -x` around that.
+## Not this cycle
 
-## Not in this scheduled cycle
+Saved-Memory send ≠ 05:00 job. ⊥ mix into shutter path.
 
-A saved-Memory send is a different flow. It is not in the 05:00 job. Do not mix it into the shutter path.
-
-If you build that flow separately: open Memories from the filmstrip left of the shutter, stay on Memories Home, never pick from Camera Roll or Add More. On the preview, a down chevron can sit anywhere on the right edge. Tap it, dump again, and do not send until that chevron is gone. There is no up-arrow fallback.
+If built separate: filmstrip left of shutter → Memories Home only. ⊥ Camera Roll. ⊥ Add More. Down chevron can sit anywhere on the right edge. Tap, dump again, ⊥ Send until chevron gone. ⊥ up-arrow fallback.
 
 ## License
 
-MIT. See `LICENSE`. The test notes describe one rooted OnePlus 7T. They are not a promise that the same coordinates work on every phone.
+MIT. `LICENSE`. Notes = one rooted OnePlus 7T. ⊥ promise same coordinates on every phone.

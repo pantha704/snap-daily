@@ -1,0 +1,5 @@
+TZ=Asia/Kolkata
+SHELL=/system/bin/sh
+PATH=/system/bin:/system/xbin
+0 5 * * * /data/adb/snap_daily/run.sh
+*/5 * * * * /data/adb/snap_daily/watch.sh

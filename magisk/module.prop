@@ -1,0 +1,6 @@
+id=snap-daily
+name=snap-daily
+version=v1
+versionCode=1
+author=pantha704
+description=05:00 IST camera snap. Installs scripts + crond. Not an LSPosed hook.
