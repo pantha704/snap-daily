@@ -136,6 +136,13 @@ if ! mkdir "$STATE/runlock" 2>/dev/null; then
 fi
 trap 'rmdir "$STATE/runlock" 2>/dev/null || true; restore' EXIT INT TERM
 
+# Mark the IST day as attempted so the watcher does not start a second cycle
+# (the day is consumed even when the proof text never appears). Dry runs and the
+# selftest must not consume it.
+if [ "${SNAP_DRY:-0}" != 1 ] && [ "${SNAP_SELFTEST:-0}" != 1 ]; then
+  : > "$STATE/ran_$(today)"
+fi
+
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 log "cycle $stamp"
 

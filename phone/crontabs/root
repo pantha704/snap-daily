@@ -1,5 +1,11 @@
 TZ=Asia/Kolkata
 SHELL=/system/bin/sh
 PATH=/system/bin:/system/xbin
-0 5 * * * /data/adb/snap_daily/run.sh
+# Only a 5-minute heartbeat lives here on purpose.
+#
+# busybox crond on this device matches the schedule in UTC and ignores TZ in its
+# own environment (measured 2026-09-24: "* 5 * * *" fired in UTC hour 5 while
+# "* 10 * * *" was silent in IST hour 10). "0 5 * * *" therefore means 05:00 UTC
+# = 10:30 IST. Every-5-minutes is timezone-proof, so watch.sh decides the daily
+# fire by comparing IST time against DUE_MIN (default 05:00 IST).
 */5 * * * * /data/adb/snap_daily/watch.sh

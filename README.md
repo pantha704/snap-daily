@@ -106,7 +106,7 @@ No PC.
 
 - scripts `phone/snap.sh` `phone/run.sh` `phone/watch.sh`
 - live dir `/data/adb/snap_daily/`
-- crontab `0 5 * * *` `TZ=Asia/Kolkata`. Watcher `*/5` only if `state/pending` exists & today not done.
+- crontab = `*/5` heartbeat only. ⊥ cron hour: busybox crond matches in **UTC** & ignores its own `TZ` (`* 5 * * *` fired in UTC hr 5, `* 10 * * *` silent in IST hr 10) → `0 5 * * *` = 10:30 IST. `watch.sh` decides: spool flush → done today? clear + exit → `pending`? run → IST ≥ `DUE_MIN` (300) & no `state/ran_<date>`? run. `snap.sh` writes `ran_<date>` at cycle start (⊥ on dry/selftest) so a proof-miss ⊥ loop.
 - `run.sh` → text log after every cycle. Photo when one exists.
 - secrets mode 600: `pin` `token` `chats` optional `to`
 - reboot ⊥ required to turn the job on. Boot hook only brings `crond` back later.
