@@ -446,6 +446,15 @@ def mark_ok():
         PENDING.unlink()
 
 
+def mark_sent():
+    """A snap has gone out. Close the day even when the proof text never shows up
+    in the UI dump, so a still-queued retry cannot fire again — and send again."""
+    STATE.mkdir(parents=True, exist_ok=True)
+    (STATE / f"sent_{ist_today()}").write_text("1\n")
+    if PENDING.exists():
+        PENDING.unlink()
+
+
 def already_ok_today():
     return LAST_OK.exists() and LAST_OK.read_text().strip() == ist_today()
 
@@ -658,7 +667,8 @@ def run():
         send_telegram(png, f"snap daily {stamp} {'OK' if ok_ui else 'CHECK'}")
         log(f"done ui_ok={ok_ui} png={png}")
         if not ok_ui:
-            log(f"proof missing {stamp} — not queued (send may already have gone out)")
+            mark_sent()
+            log(f"proof missing {stamp} — day closed as sent, never resent")
             return 10
         mark_ok()
         return 0
