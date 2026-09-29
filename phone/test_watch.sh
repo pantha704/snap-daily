@@ -152,5 +152,21 @@ setup
 rc=$(run_case 100 80)
 check t14_old_sent_pruned gone "$([ -f $T/base/state/sent_$OLD ] && echo present || echo gone)"
 
+# t15 the first attempt is confined to the 05:00-06:00 IST hour
+setup
+rc=$(run_case 361 80)
+check t15_past_window_no_first_attempt 0 "$(runs)"
+
+# t16 a missed morning is reported instead of sent late
+setup
+rc=$(run_case 500 80)
+check t16_quiet_when_window_missed 0 "$(runs)"
+check t16_missed_notice_sent 1 "$(curls)"
+
+# t17 still inside the window at 05:59
+setup
+rc=$(run_case 359 80)
+check t17_inside_window_fires 1 "$(runs)"
+
 echo "--- pass=$PASS fail=$FAIL ---"
 [ "$FAIL" = 0 ] || exit 1

@@ -38,6 +38,8 @@ check t07_gaveup_marker yes "$([ -f $T/state/gaveup_$TODAY ] && echo yes || echo
 reset; touch "$T/state/pending"; run 700
 check t08_past_window_no_run no "$(ran)"
 check t08_pending_cleared gone "$([ -f $T/state/pending ] && echo present || echo gone)"
+reset; run 400;                                check t09_first_attempt_windowed no "$(ran)"
+reset; run 359;                                check t10_inside_window_fires yes "$(ran)"
 
 rm -rf "$T"
 echo "--- pass=$PASS fail=$FAIL ---"

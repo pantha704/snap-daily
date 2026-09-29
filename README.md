@@ -168,8 +168,10 @@ Bounded by design, so a bad day cannot become a loop:
 
 - **Retry cap** — `SNAP_MAX_TRIES` (default 3) attempts per IST day, first try
   included. Then `state/gaveup_<date>` and one notice, not another attempt.
-- **Retry window** — retries stop `SNAP_RETRY_WINDOW` (default 300) minutes
-  after the due time (10:00 IST with the default 05:00 IST fire).
+- **Retry window** — every attempt, first one included, happens within
+  `SNAP_RETRY_WINDOW` (default 60) minutes of the due time: the snap is a
+  05:00–06:00 IST thing. A missed morning is reported once
+  (`the 05:00 IST window passed with no snap today`), never sent late.
 - **Battery floor** — below `SNAP_MIN_BATTERY` (default 15%) the phone is never
   woken, and the day stays open so the snap still goes out once it is charged.
 - **One snap per day** — tapping Send writes `state/sent_<date>` and clears the

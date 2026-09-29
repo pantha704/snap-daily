@@ -7,7 +7,7 @@ STATE=$SNAP_STATE
 TODAY=$(TZ=Asia/Kolkata date +%Y%m%d)
 DUE_MIN=${SNAP_DUE_MIN:-300}      # 05:00 IST, minutes past midnight
 MAX_TRIES=${SNAP_MAX_TRIES:-3}    # attempts per IST day, first try included
-WINDOW=${SNAP_RETRY_WINDOW:-300}  # stop retrying 05:00 + 5h = 10:00 IST
+WINDOW=${SNAP_RETRY_WINDOW:-60}   # attempts stay inside 05:00-06:00 IST
 MIN_BAT=${SNAP_MIN_BATTERY:-15}   # below this, never wake the phone
 H=$(TZ=Asia/Kolkata date +%H); case "$H" in 0*) H=${H#0} ;; esac; [ -n "$H" ] || H=0
 M=$(TZ=Asia/Kolkata date +%M); case "$M" in 0*) M=${M#0} ;; esac; [ -n "$M" ] || M=0
@@ -40,8 +40,8 @@ if [ -f "$STATE/pending" ]; then
   exec python3 "$ROOT/snap_daily.py"
 fi
 
-# first attempt of the day: at or after the due time, once per IST day
-if [ "$NOW_MIN" -ge "$DUE_MIN" ] && [ ! -f "$STATE/ran_$TODAY" ]; then
+# first attempt of the day: inside the 05:00 IST window, once per IST day
+if [ "$NOW_MIN" -ge "$DUE_MIN" ] && [ "$NOW_MIN" -le "$((DUE_MIN + WINDOW))" ] && [ ! -f "$STATE/ran_$TODAY" ]; then
   echo 1 > "$STATE/tries_$TODAY"
   exec python3 "$ROOT/snap_daily.py"
 fi

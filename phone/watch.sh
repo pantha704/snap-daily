@@ -22,7 +22,7 @@ STATE=$BASE/state
 RUNSH=$BASE/run.sh
 DUE_MIN=${SNAP_DUE_MIN:-300}           # 05:00 IST, minutes past midnight
 MAX_TRIES=${SNAP_MAX_TRIES:-3}         # attempts per IST day, first try included
-WINDOW=${SNAP_RETRY_WINDOW:-300}       # stop retrying 05:00 + 5h = 10:00 IST
+WINDOW=${SNAP_RETRY_WINDOW:-60}        # attempts stay inside 05:00-06:00 IST
 MIN_BAT=${SNAP_MIN_BATTERY:-15}        # below this, do not wake the phone at all
 CURL=${SNAP_CURL:-/system/bin/curl}
 DUMPSYS=${SNAP_DUMPSYS:-/system/bin/dumpsys}
@@ -155,9 +155,14 @@ if [ -f "$STATE/pending" ]; then
   exec /system/bin/sh "$RUNSH"
 fi
 
-# 6. first attempt of the day: at or after 05:00 IST, once per IST day
-if [ "$now_min" -ge "$DUE_MIN" ] && [ ! -f "$STATE/ran_$today" ]; then
+# 6. first attempt of the day: at or after 05:00 IST, and inside the window.
+# It is a 05:00 IST snap, so a morning that was missed (phone off, flat, locked
+# away) stays missed instead of firing at some random later hour.
+if [ "$now_min" -ge "$DUE_MIN" ] && [ "$now_min" -le "$((DUE_MIN + WINDOW))" ] && [ ! -f "$STATE/ran_$today" ]; then
   echo 1 > "$STATE/tries_$today"
   exec /system/bin/sh "$RUNSH"
+fi
+if [ "$now_min" -gt "$((DUE_MIN + WINDOW))" ] && [ ! -f "$STATE/ran_$today" ] && [ ! -f "$STATE/sent_$today" ]; then
+  tg missed "snap daily: the 05:00 IST window passed with no snap today"
 fi
 exit 0
