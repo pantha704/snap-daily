@@ -337,6 +337,9 @@ fail() {
   if queue_reason "$msg"; then
     printf '%s %s\n' "$(today)" "$msg" > "$STATE/pending"
     log "queued"
+  else
+    # nothing will retry, so do not leave Snapchat holding the camera
+    cool_off
   fi
   # one failure photo per IST day: retries used to send a matching photo each
   # time, which is how ~100 wake-ups also became ~100 Telegram messages
@@ -379,6 +382,15 @@ restart_snap() {
   /system/bin/am force-stop "$SNAP_PKG" >/dev/null 2>&1 || true
   sleep 1
   ensure_snap
+}
+
+# Snapchat holds the camera open while it sits in the foreground, which keeps the
+# sensor and ISP warm for as long as it is left there. Used once the day is over
+# or when no retry will follow; during retries the app is deliberately left alive
+# so the next attempt does not have to cold-start it.
+cool_off() {
+  /system/bin/am force-stop "$SNAP_PKG" >/dev/null 2>&1 || true
+  log "snapchat closed (camera released)"
 }
 
 wait_landmark() {
@@ -579,6 +591,7 @@ if echo "$proof" | grep -q -e 'Snap Sent' -e 'Delivered'; then
   rm -f "$STATE/pending"
   tg_photo "snap daily $stamp OK" "$png"
   log "done ui_ok=1"
+  cool_off
   exit 0
 fi
 # A snap has gone out. Close the day even though the proof text never appeared:
@@ -588,4 +601,5 @@ fi
 rm -f "$STATE/pending"
 tg_photo "snap daily $stamp CHECK — sent, no proof text; day closed, not resent" "$png"
 log "done ui_ok=0 proof missing — day CLOSED, not queued"
+cool_off
 exit 10
