@@ -164,11 +164,36 @@ Two identical dumps in a row with a blocker on screen → Back, then check the p
 
 ## Failsafe
 
+Bounded by design, so a bad day cannot become a loop:
+
+- **Retry cap** — `SNAP_MAX_TRIES` (default 3) attempts per IST day, first try
+  included. Then `state/gaveup_<date>` and one notice, not another attempt.
+- **Retry window** — retries stop `SNAP_RETRY_WINDOW` (default 300) minutes
+  after the due time (10:00 IST with the default 05:00 IST fire).
+- **Battery floor** — below `SNAP_MIN_BATTERY` (default 15%) the phone is never
+  woken, and the day stays open so the snap still goes out once it is charged.
+- **One snap per day** — tapping Send writes `state/sent_<date>` and clears the
+  queued retry whether or not the proof text appears. A retry that reaches Send
+  can never send a second snap.
+- **One failure notice per day** — retries repeat the failure in the log, not in
+  Telegram.
+- **PIN self-heal** — a run killed between clearing the PIN and restoring it
+  leaves `state/pin_cleared` behind; the watcher relocks the phone within 5 min.
+- **crond watchdog** — a detached supervisor restarts crond if it dies, because
+  nothing else does.
+- **Offline** — no taps, queued, retried when the network returns.
+
+`test_watch.sh` (23 cases) proves the watcher logic on the device:
+
+```sh
+sh test_watch.sh /data/adb/snap_daily/watch.sh
+```
+
 Holds: pre-send miss → `state/pending` + 5 min watcher. One run. PIN restore on normal exit & SIGTERM, only if this run cleared it. Proof miss ⊥ queued. `stayon` off on exit.
 
 Offline: ! nothing but snap delivery & Telegram needs net. Clock, unlock, taps, screenshots = local. No net at 05:00 → ⊥ taps, `state/pending` = `offline`, exit `2`, watcher retries every 5 min → snap goes when net returns, same day. One deduped `queued: phone offline` notice spooled. Undeliverable Telegram → `state/tgspool/` (max 20, oldest dropped), flushed by watcher. Exit `2` ⊥ spool a log per retry. `SNAP_ONLINE_HOSTS` = probe hosts; `SNAP_SKIP_ONLINE_CHECK=1` skips probe.
 
-⊥ hold: `kill -9` between PIN clear & restore → phone stays unlocked. No `Snap Sent` / `Delivered` → day not marked, not retried, next 05:00 is next try. Watcher idle unless `pending` exists. Path B idle if phone off network. Empty Compose dump → trust screenshot, not the XML.
+⊥ hold: `kill -9` between PIN clear & restore used to leave the phone unlocked — now closed: the `pin_cleared` marker makes the watcher relock it within 5 min. Sent without a `Snap Sent` / `Delivered` text → the day is closed as sent (`state/sent_<date>`), never resent; next 05:00 is the next snap. Watcher idle unless `pending` exists. Path B idle if phone off network. Empty Compose dump → trust screenshot, not the XML.
 
 ## Security
 

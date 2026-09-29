@@ -5,7 +5,7 @@ set -eu
 BASE=/data/adb/snap_daily
 STATE=$BASE/state
 RUNS=$BASE/runs
-DUMP=/sdcard/uidump.xml
+DUMP=/data/local/tmp/uidump.xml
 NODES=$STATE/nodes.tsv
 FIRE_MARK=FIRE
 mkdir -p "$STATE" "$RUNS"
@@ -21,6 +21,10 @@ restore() {
   if [ "$CLEARED" = 1 ] && [ -f "$BASE/secrets/pin" ]; then
     pin=$(cat "$BASE/secrets/pin")
     /system/bin/locksettings set-pin "$pin" >/dev/null 2>&1 || true
+    # only drop the "needs relock" marker once the lock is really back
+    if /system/bin/locksettings verify --old "$pin" >/dev/null 2>&1; then
+      rm -f "$STATE/pin_cleared"
+    fi
   fi
   /system/bin/svc power stayon false >/dev/null 2>&1 || true
 }
@@ -136,6 +140,19 @@ if ! mkdir "$STATE/runlock" 2>/dev/null; then
 fi
 trap 'rmdir "$STATE/runlock" 2>/dev/null || true; restore' EXIT INT TERM
 
+# Never wake a dying phone. This runs BEFORE the day is marked attempted, so a
+# skip for a flat battery leaves the day open and the watcher can still fire
+# once the phone is charged.
+if [ "${SNAP_SKIP_BATTERY_CHECK:-0}" != 1 ] && [ "${SNAP_SELFTEST:-0}" != 1 ]; then
+  lvl=$(/system/bin/dumpsys battery 2>/dev/null | /system/xbin/busybox awk -F': ' '/^  level:/ {print $2; exit}')
+  case "$lvl" in ''|*[!0-9]*) lvl=100 ;; esac
+  minb=${SNAP_MIN_BATTERY:-15}
+  if [ "$lvl" -lt "$minb" ]; then
+    log "battery ${lvl}% below ${minb}% — refusing to wake the phone"
+    exit 11
+  fi
+fi
+
 # Mark the IST day as attempted so the watcher does not start a second cycle
 # (the day is consumed even when the proof text never appears). Dry runs and the
 # selftest must not consume it.
@@ -170,6 +187,9 @@ unlock_if_needed() {
   echo "$v" | grep -q "verified successfully" || { log "PIN verify failed"; return 1; }
   /system/bin/locksettings clear --old "$pin" >/dev/null 2>&1 || true
   CLEARED=1
+  # flagged before the lock is really gone: if this process dies now, the
+  # watcher sees the marker and relocks the phone on its next tick
+  : > "$STATE/pin_cleared"
   /system/bin/killall com.android.systemui >/dev/null 2>&1 || true
   sleep 2
   /system/bin/input keyevent 224
@@ -187,6 +207,21 @@ refresh() {
 
 first_title() {
   /system/xbin/busybox awk -F '\t' '$1 != "" { print substr($1,1,40); exit }' "$NODES"
+}
+
+# Short, actionable context for a failure: which app had focus, whether the
+# device was still on the lock screen, and the battery. Without this a failure
+# was reported from whatever text happened to be first in the dump ("stuck:
+# Internet" came from a quick-settings tile, which said nothing about the cause).
+screen_ctx() {
+  foc=$(/system/bin/dumpsys window 2>/dev/null | /system/bin/grep -m1 mCurrentFocus || true)
+  lock=$(/system/bin/dumpsys window 2>/dev/null | /system/bin/grep -m1 mDreamingLockscreen || true)
+  pkg=${foc##* }
+  pkg=${pkg%%/*}
+  lk=${lock#*mDreamingLockscreen=}
+  lk=${lk%% *}
+  bat=$(/system/bin/dumpsys battery 2>/dev/null | /system/xbin/busybox awk -F': ' '/^  level:/ {print $2; exit}')
+  printf 'focus=%s lock=%s bat=%s' "${pkg:-?}" "${lk:-?}" "${bat:-?}"
 }
 
 landmark_line() {
@@ -224,8 +259,9 @@ shot() {
   sz=0
   [ -f "$dest" ] && sz=$(stat -c %s "$dest" 2>/dev/null || echo 0)
   if [ "$sz" -lt 80000 ]; then
-    /system/bin/screencap -p /sdcard/snap_proof.png || true
-    cp /sdcard/snap_proof.png "$dest" 2>/dev/null || true
+    /system/bin/screencap -p /data/local/tmp/snap_proof.png || true
+    cp /data/local/tmp/snap_proof.png "$dest" 2>/dev/null || true
+    rm -f /data/local/tmp/snap_proof.png
   fi
 }
 
@@ -285,11 +321,24 @@ fail() {
     printf '%s %s\n' "$(today)" "$msg" > "$STATE/pending"
     log "queued"
   fi
-  if [ -f "$d/screen.png" ]; then
-    tg_photo "snap daily FAIL: $msg" "$d/screen.png"
+  # one failure photo per IST day: retries used to send a matching photo each
+  # time, which is how ~100 wake-ups also became ~100 Telegram messages
+  if [ -f "$STATE/notified_$(today)_fail" ]; then
+    log "failure notice already sent today — staying quiet"
   else
-    spool_text "snap daily FAIL: $msg"
+    : > "$STATE/notified_$(today)_fail"
+    if [ -f "$d/screen.png" ]; then
+      tg_photo "snap daily FAIL: $msg" "$d/screen.png"
+    else
+      spool_text "snap daily FAIL: $msg"
+    fi
   fi
+  # bound the runs dir: keep the newest 20 run directories
+  n=0
+  for r in $(ls -1dt "$RUNS"/*/ 2>/dev/null); do
+    n=$((n + 1))
+    [ "$n" -le 20 ] || rm -rf "$r"
+  done
   exit "$code"
 }
 
@@ -436,7 +485,8 @@ ensure_snap
 line=$(wait_landmark ready 12 || true)
 if [ -z "$line" ]; then
   title=$(first_title || true)
-  if [ -n "$title" ]; then fail "stuck: $title" 5; else fail "no shutter" 5; fi
+  ctx=$(screen_ctx || true)
+  if [ -n "$title" ]; then fail "stuck: $title [$ctx]" 5; else fail "no shutter [$ctx]" 5; fi
 fi
 sendline=$(landmark_line sendto || true)
 if [ -z "$sendline" ]; then
@@ -495,14 +545,30 @@ sleep 2.5
 refresh || true
 png=$RUNS/chat_$stamp.png
 shot "$png"
-proof=$(tr '\n' ' ' < "$NODES" || true)
+proof=""
+tries_proof=0
+while [ "$tries_proof" -lt 3 ]; do
+  proof=$(tr '\n' ' ' < "$NODES" || true)
+  if echo "$proof" | grep -q -e 'Snap Sent' -e 'Delivered'; then
+    break
+  fi
+  sleep 1.2
+  refresh || true
+  tries_proof=$((tries_proof + 1))
+done
 if echo "$proof" | grep -q -e 'Snap Sent' -e 'Delivered'; then
   printf '%s\n' "$(today)" > "$STATE/last_ok"
+  : > "$STATE/sent_$(today)"
   rm -f "$STATE/pending"
   tg_photo "snap daily $stamp OK" "$png"
   log "done ui_ok=1"
   exit 0
 fi
-tg_photo "snap daily $stamp CHECK" "$png"
-log "done ui_ok=0 proof missing — not queued"
+# A snap has gone out. Close the day even though the proof text never appeared:
+# leaving the day open kept the queued-retry alive, and every retry that reached
+# Send tapped it again — 24 snaps went to the group in one morning that way.
+: > "$STATE/sent_$(today)"
+rm -f "$STATE/pending"
+tg_photo "snap daily $stamp CHECK — sent, no proof text; day closed, not resent" "$png"
+log "done ui_ok=0 proof missing — day CLOSED, not queued"
 exit 10
