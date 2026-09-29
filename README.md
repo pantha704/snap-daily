@@ -183,7 +183,7 @@ Bounded by design, so a bad day cannot become a loop:
   nothing else does.
 - **Offline** — no taps, queued, retried when the network returns.
 
-`test_watch.sh` (23 cases) proves the watcher logic on the device:
+`test_watch.sh` (23 cases) proves the phone watcher logic on the device, and `vps/test_snap_watch.sh` (13 cases) the VPS watcher:
 
 ```sh
 sh test_watch.sh /data/adb/snap_daily/watch.sh

@@ -12,6 +12,7 @@ MIN_BAT=${SNAP_MIN_BATTERY:-15}   # below this, never wake the phone
 H=$(TZ=Asia/Kolkata date +%H); case "$H" in 0*) H=${H#0} ;; esac; [ -n "$H" ] || H=0
 M=$(TZ=Asia/Kolkata date +%M); case "$M" in 0*) M=${M#0} ;; esac; [ -n "$M" ] || M=0
 NOW_MIN=$((H * 60 + M))
+NOW_MIN=${SNAP_NOW_MIN:-$NOW_MIN}   # overridable so the guards can be tested
 if [ -f "$STATE/last_ok" ] && [ "$(tr -d "\\n" < "$STATE/last_ok")" = "$TODAY" ]; then rm -f "$STATE/pending"; exit 0; fi
 # a snap already went out today, proof text or not: never send a second one
 if [ -f "$STATE/sent_$TODAY" ]; then rm -f "$STATE/pending"; exit 0; fi
