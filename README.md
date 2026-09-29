@@ -172,7 +172,7 @@ Bounded by design, so a bad day cannot become a loop:
   `SNAP_RETRY_WINDOW` (default 60) minutes of the due time: the snap is a
   05:00–06:00 IST thing. A missed morning is reported once
   (`the 05:00 IST window passed with no snap today`), never sent late.
-- **Keepalive** — the 5-minute crond heartbeat also re-raises the phone's rooted
+- **Keepalive** — the crond heartbeat (`*/15`, offset) also re-raises the phone's rooted
   chain (`keepalive.sh`): the `persist/run.sh` supervisor, `tailscaled`, adb over
   5555, ssh and wifi. Every rooted process on that phone is raised by Magisk's
   boot stage; on 2026-09-29 a restart skipped that stage and the phone came back

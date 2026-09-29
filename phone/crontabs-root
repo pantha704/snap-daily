@@ -1,0 +1,26 @@
+TZ=Asia/Kolkata
+SHELL=/system/bin/sh
+PATH=/system/bin:/system/xbin
+# Two entries, both heartbeats. The daily fire is NOT scheduled here.
+#
+# busybox crond on this device matches the schedule in UTC and ignores TZ in its
+# own environment (measured 2026-09-24: "* 5 * * *" fired in UTC hour 5 while
+# "* 10 * * *" was silent in IST hour 10). "0 5 * * *" therefore means 05:00 UTC
+# = 10:30 IST, which is how the snap once went out 5.5 hours late. A heartbeat is
+# timezone-proof, so watch.sh decides the daily fire itself by comparing IST time
+# against DUE_MIN (default 05:00 IST). Nothing else ever touches Snapchat.
+#
+# 15-minute heartbeat (was 5). It exists for three reasons, none of which is the
+# daily fire itself: a missed tick costs nothing, because the decision is the IST
+# comparison; a failed 05:00 attempt retries at :15/:30/:45 inside the
+# 05:00-06:00 window; and the Telegram spool + PIN self-heal ride it. 96 ticks a
+# day instead of 288, each one a few file reads — crond's cumulative CPU time
+# after 32 minutes on this schedule was 0.000 s.
+*/15 * * * * /data/adb/snap_daily/watch.sh
+
+# Offset by 7 minutes so it never overlaps watch.sh. Everything rooted on this
+# phone is raised by Magisk's boot stage; crond is the only rooted daemon here
+# with its own supervisor, so it also re-raises tailscaled / adb 5555 / ssh /
+# wifi. On 2026-09-29 a restart skipped the Magisk stage and the phone came back
+# online with none of them running and no way for the phone itself to fix that.
+7,22,37,52 * * * * /data/adb/snap_daily/keepalive.sh
