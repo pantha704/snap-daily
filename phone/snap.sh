@@ -10,6 +10,7 @@ NODES=$STATE/nodes.tsv
 FIRE_MARK=FIRE
 mkdir -p "$STATE" "$RUNS"
 CLEARED=0
+UNLOCK_ERR=""
 SNAP_PKG=com.snapchat.android
 
 log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
@@ -181,10 +182,18 @@ unlock_if_needed() {
     log "unlocked"
     return 0
   fi
-  [ -f "$BASE/secrets/pin" ] || { log "LOCKED and no PIN file"; return 1; }
+  if [ ! -f "$BASE/secrets/pin" ]; then
+    UNLOCK_ERR="keyguard is up and secrets/pin is missing"
+    log "LOCKED and no PIN file"
+    return 1
+  fi
   pin=$(cat "$BASE/secrets/pin")
   v=$(/system/bin/locksettings verify --old "$pin" 2>&1 || true)
-  echo "$v" | grep -q "verified successfully" || { log "PIN verify failed"; return 1; }
+  if ! echo "$v" | grep -q "verified successfully"; then
+    UNLOCK_ERR="secrets/pin no longer matches the device PIN"
+    log "PIN verify failed"
+    return 1
+  fi
   /system/bin/locksettings clear --old "$pin" >/dev/null 2>&1 || true
   CLEARED=1
   # flagged before the lock is really gone: if this process dies now, the
@@ -194,6 +203,14 @@ unlock_if_needed() {
   sleep 2
   /system/bin/input keyevent 224
   sleep 1
+  # On a file-based-encryption device that has not been unlocked since boot the
+  # clear cannot unseal the user's storage, so the keyguard stays up. Say so
+  # plainly: this is the one lock failure a retry can never fix.
+  if /system/bin/dumpsys window 2>/dev/null | grep -q 'mDreamingLockscreen=true'; then
+    UNLOCK_ERR="keyguard still up after clearing the PIN (needs one manual unlock since boot)"
+    log "still locked after PIN clear"
+    return 1
+  fi
   log "unlocked via PIN"
 }
 
@@ -466,7 +483,7 @@ fi
 
 wake
 refresh || true
-unlock_if_needed || fail "lock" 3
+unlock_if_needed || fail "lock: ${UNLOCK_ERR:-unknown}" 3
 /system/bin/settings put system show_touches 1
 ann=${SNAP_ANNOUNCE:-}
 if [ -n "$ann" ]; then
