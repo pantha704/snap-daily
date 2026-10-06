@@ -171,6 +171,47 @@ wake() {
   /system/bin/cmd statusbar collapse || true
 }
 
+# Snapchat can be launched and still not be what is on screen. If the
+# notification shade is open, the focused window is NotificationShade and the
+# camera never appears: two runs in a row (2026-10-05, 2026-10-06) failed with
+# "no shutter [focus=NotificationShade]". Cause: the unlock below restarts
+# SystemUI to drop the keyguard, and the shade comes back up when it returns, so
+# the collapse inside wake() is too early to help. Rooted in the app updates of
+# 10-04 (WhatsApp 13:52, Facebook 22:09), which left heads-up notifications
+# behind it.
+deshade() {
+  /system/bin/cmd statusbar collapse >/dev/null 2>&1 || true
+}
+
+shade_up() {
+  /system/bin/dumpsys window 2>/dev/null | /system/bin/grep -m1 mCurrentFocus \
+    | /system/bin/grep -q NotificationShade
+}
+
+# Primary unlock: clear the PIN so the keyguard becomes swipe-only, then swipe it
+# away. SystemUI is never restarted, which is the whole point: killing SystemUI
+# (the old fallback, still below) leaves the notification shade stuck open over
+# the lock screen, and *nothing* clears it from there — measured 2026-10-06 with
+# the shade focused: BACK, HOME, `cmd statusbar collapse`, `wm dismiss-keyguard`,
+# a bottom-edge home gesture and a full SystemUI restart all failed. Two 05:00
+# runs (10-05, 10-06) died as "no shutter [focus=NotificationShade]" because of
+# it. The same sequence cleared immediately once the device was unlocked without
+# the restart.
+swipe_unlock() {
+  /system/bin/input keyevent 224
+  sleep 1
+  n=0
+  while [ "$n" -lt 3 ]; do
+    /system/bin/input swipe 540 1900 540 500 300
+    sleep 1.5
+    if ! /system/bin/dumpsys window 2>/dev/null | grep -q 'mDreamingLockscreen=true'; then
+      return 0
+    fi
+    n=$((n + 1))
+  done
+  return 1
+}
+
 unlock_if_needed() {
   info=$(/system/bin/dumpsys window | /system/bin/grep -E 'mCurrentFocus|mDreamingLockscreen' | /system/bin/head -5 || true)
   xml=""
@@ -199,9 +240,20 @@ unlock_if_needed() {
   # flagged before the lock is really gone: if this process dies now, the
   # watcher sees the marker and relocks the phone on its next tick
   : > "$STATE/pin_cleared"
+  if swipe_unlock; then
+    log "unlocked via PIN + swipe (no SystemUI restart)"
+    deshade
+    sleep 0.5
+    return 0
+  fi
+  log "swipe unlock did not take — falling back to SystemUI restart"
   /system/bin/killall com.android.systemui >/dev/null 2>&1 || true
   sleep 2
   /system/bin/input keyevent 224
+  sleep 1
+  # the SystemUI restart above is what puts the shade back up; collapse it now,
+  # before the camera is hunted for
+  deshade
   sleep 1
   # On a file-based-encryption device that has not been unlocked since boot the
   # clear cannot unseal the user's storage, so the keyguard stays up. Say so
@@ -400,6 +452,7 @@ wait_landmark() {
   stuck=0
   backs=0
   restarts=0
+  shade_collapses=0
   i=0
   while [ "$i" -lt "$tries" ]; do
     refresh || true
@@ -420,6 +473,30 @@ wait_landmark() {
     if [ -n "$line" ]; then
       printf '%s\n' "$line"
       return 0
+    fi
+    # The shade is a blocker that no dismiss-word or Back covers: it is not part
+    # of Snapchat at all, so collapse it and look again. If it will not stay
+    # down, Snapchat itself is restarted.
+    if shade_up; then
+      shade_collapses=$((shade_collapses + 1))
+      log "notification shade is focused — clearing $shade_collapses/3"
+      deshade
+      sleep 0.6
+      if shade_up; then
+        # a swipe-up is what clears it on an unlocked screen; the keyguard is
+        # already down at this point in the cycle
+        /system/bin/input swipe 540 1900 540 500 300
+        sleep 1
+      fi
+      if shade_up && [ "$shade_collapses" -ge 3 ]; then
+        log "shade will not clear — restarting snap"
+        restart_snap
+        sleep 1
+        shade_collapses=0
+      fi
+      refresh || true
+      i=$((i + 1))
+      continue
     fi
     sig=$(/system/xbin/busybox awk -F '\t' 'NF { print $1 "|" $2 "|" $4 }' "$NODES" | /system/bin/head -40 | tr '\n' ';')
     if [ "$sig" = "$prev" ]; then stuck=$((stuck + 1)); else stuck=0; fi
