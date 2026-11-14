@@ -36,6 +36,17 @@ m=$(date +%M); case "$m" in 0*) m=${m#0} ;; esac; [ -n "$m" ] || m=0
 now_min=$((h * 60 + m))
 now_min=${SNAP_NOW_MIN:-$now_min}
 
+# PERSISTENT LOG. This script used to leave no trace anywhere: run.sh was exec'd
+# (so its output and exit code were lost) and the only "missed" alert was gated
+# on ran_$today being absent, which is exactly the case a failed attempt creates.
+# Seven days of failures therefore went unnoticed. Every line now lands in
+# logs/watch_<date>.log, and the child inherits it.
+LOGDIR=$BASE/logs
+mkdir -p "$LOGDIR"
+exec >>"$LOGDIR/watch_$(date +%Y%m%d).log" 2>&1
+echo "----- $(date '+%Y-%m-%d %H:%M:%S %Z') today=$today now_min=$now_min"
+find "$LOGDIR" -name 'watch_*.log' -mtime +7 -delete 2>/dev/null || true
+
 tg() { # $1 = tag (deduped per IST day), $2 = message text
   tag=$1; msg=$2
   [ -f "$BASE/secrets/token" ] && [ -f "$BASE/secrets/chats" ] || return 0
@@ -152,7 +163,9 @@ if [ -f "$STATE/pending" ]; then
     exit 0
   fi
   echo $((tries + 1)) > "$STATE/tries_$today"
-  exec /system/bin/sh "$RUNSH"
+  /system/bin/sh "$RUNSH"; rc=$?
+  [ "$rc" -eq 0 ] || tg runrc "snap daily: retry run exited rc=$rc (tries=$((tries + 1)), today=$today) — see logs/"
+  exit 0
 fi
 
 # 6. first attempt of the day: at or after 05:00 IST, and inside the window.
@@ -160,9 +173,17 @@ fi
 # away) stays missed instead of firing at some random later hour.
 if [ "$now_min" -ge "$DUE_MIN" ] && [ "$now_min" -le "$((DUE_MIN + WINDOW))" ] && [ ! -f "$STATE/ran_$today" ]; then
   echo 1 > "$STATE/tries_$today"
-  exec /system/bin/sh "$RUNSH"
+  /system/bin/sh "$RUNSH"; rc=$?
+  [ "$rc" -eq 0 ] || tg runrc "snap daily: run exited rc=$rc (today=$today) — see logs/"
+  exit 0
 fi
-if [ "$now_min" -gt "$((DUE_MIN + WINDOW))" ] && [ ! -f "$STATE/ran_$today" ] && [ ! -f "$STATE/sent_$today" ]; then
-  tg missed "snap daily: the 05:00 IST window passed with no snap today"
+
+# 7. SILENCE ALARM. Fires whenever the window is gone and nothing was sent —
+# including when an attempt ran, which the old condition explicitly skipped.
+# A run that dies without reaching fail() used to be invisible; now it is loud.
+if [ "$now_min" -gt "$((DUE_MIN + WINDOW))" ] && [ ! -f "$STATE/sent_$today" ]; then
+  tries=$(cat "$STATE/tries_$today" 2>/dev/null || echo 0)
+  ok=$(cat "$STATE/last_ok" 2>/dev/null || echo never)
+  tg missed "snap daily: NO SNAP today — window closed, tries=$tries, last successful=$ok"
 fi
 exit 0
