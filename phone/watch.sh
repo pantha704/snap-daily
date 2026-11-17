@@ -140,7 +140,7 @@ fi
 # 4. battery floor: never wake a dying phone, and do not count it as an attempt
 lvl=$(battery)
 if [ "$lvl" -lt "$MIN_BAT" ]; then
-  if [ -f "$STATE/pending" ] || { [ "$now_min" -ge "$DUE_MIN" ] && [ ! -f "$STATE/ran_$today" ]; }; then
+  if [ -f "$STATE/pending" ] || { [ "$now_min" -ge "$DUE_MIN" ] && [ ! -f "$STATE/sent_$today" ]; }; then
     tg lowbat "snap daily: skipped, battery ${lvl}% (below ${MIN_BAT}%) — will try when charged"
   fi
   exit 0
@@ -168,13 +168,24 @@ if [ -f "$STATE/pending" ]; then
   exit 0
 fi
 
-# 6. first attempt of the day: at or after 05:00 IST, and inside the window.
-# It is a 05:00 IST snap, so a morning that was missed (phone off, flat, locked
-# away) stays missed instead of firing at some random later hour.
-if [ "$now_min" -ge "$DUE_MIN" ] && [ "$now_min" -le "$((DUE_MIN + WINDOW))" ] && [ ! -f "$STATE/ran_$today" ]; then
-  echo 1 > "$STATE/tries_$today"
+# 6. Attempt gate: at/after 05:00 IST, inside the window, nothing sent yet, and the
+# attempt budget unspent. It is a 05:00 IST snap, so a morning that was missed
+# (phone off, flat, locked away) stays missed instead of firing at a random hour.
+#
+# The previous gate was `[ ! -f "$STATE/ran_$today" ]`, which is self-suppressing:
+# the first attempt CREATES ran_$today, so the condition became permanently false
+# and a single transient failure killed the whole day. Measured 2026-11-17: the
+# 05:00:01 run died with `cmd: Failure calling service input: Failed transaction
+# (2147483646)`, tries stayed at 1, and the 05:15/05:30/05:45 retries never fired.
+# Attempts are now bounded by MAX_TRIES and stopped only by sent_$today, which
+# nothing but a real send can create.
+_tries_now=$(cat "$STATE/tries_$today" 2>/dev/null || echo 0)
+case "$_tries_now" in ''|*[!0-9]*) _tries_now=0 ;; esac
+if [ "$now_min" -ge "$DUE_MIN" ] && [ "$now_min" -le "$((DUE_MIN + WINDOW))" ] \
+   && [ ! -f "$STATE/sent_$today" ] && [ "$_tries_now" -lt "$MAX_TRIES" ]; then
+  echo $((_tries_now + 1)) > "$STATE/tries_$today"
   /system/bin/sh "$RUNSH"; rc=$?
-  [ "$rc" -eq 0 ] || tg runrc "snap daily: run exited rc=$rc (today=$today) — see logs/"
+  [ "$rc" -eq 0 ] || tg runrc "snap daily: run exited rc=$rc (try $((_tries_now + 1))/$MAX_TRIES, today=$today) — see logs/"
   exit 0
 fi
 

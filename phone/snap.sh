@@ -164,10 +164,48 @@ fi
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 log "cycle $stamp"
 
+# `input` can reject the very first injection after deep sleep with
+# "Failure calling service input: Failed transaction (2147483646)" — measured
+# 2026-11-17 05:00:01 on this device. Wake first, confirm wakefulness actually
+# flipped, then confirm the injector answers before any real tap is attempted.
 wake() {
-  /system/bin/input keyevent 224
-  /system/bin/svc power stayon true
-  /system/bin/settings put system screen_off_timeout 180000
+  _wn=0
+  while [ "$_wn" -lt 5 ]; do
+    /system/bin/input keyevent 224 >/dev/null 2>&1 || true
+    if /system/bin/dumpsys power 2>/dev/null | grep -q 'mWakefulness=Awake'; then
+      break
+    fi
+    sleep 1
+    _wn=$((_wn + 1))
+  done
+  /system/bin/svc power stayon true 2>/dev/null || true
+  # The timeout must be VERIFIED, not assumed: this write gets dropped with
+  # "Failure calling service settings: Failed transaction" and the phone then
+  # sleeps 30 s into the run. Measured 2026-11-17: screen_off_timeout was still
+  # 30000 after wake() "succeeded", mWakefulness went Asleep mid-run, and every
+  # subsequent injection failed against a dark display (mCurrentFocus=null).
+  _so=0
+  while [ "$_so" -lt 4 ]; do
+    _cur=$(/system/bin/settings get system screen_off_timeout 2>/dev/null || echo 0)
+    case "$_cur" in ''|*[!0-9]*) _cur=0 ;; esac
+    [ "$_cur" -ge 180000 ] && break
+    /system/bin/settings put system screen_off_timeout 180000 2>/dev/null || true
+    sleep 1
+    _so=$((_so + 1))
+  done
+  if [ "${_cur:-0}" -lt 180000 ]; then
+    log "warning: screen_off_timeout still $_cur — display may sleep mid-run"
+  fi
+  # Prime the input service: KEYCODE_UNKNOWN is a no-op that still proves the
+  # injector answers. Otherwise the first real tap is the probe and can fail.
+  _in=0
+  while [ "$_in" -lt 5 ]; do
+    if /system/bin/input keyevent 0 >/dev/null 2>&1; then
+      break
+    fi
+    sleep 2
+    _in=$((_in + 1))
+  done
   /system/bin/cmd statusbar collapse || true
 }
 
@@ -198,11 +236,11 @@ shade_up() {
 # it. The same sequence cleared immediately once the device was unlocked without
 # the restart.
 swipe_unlock() {
-  /system/bin/input keyevent 224
+  /system/bin/input keyevent 224 2>/dev/null || true
   sleep 1
   n=0
   while [ "$n" -lt 3 ]; do
-    /system/bin/input swipe 540 1900 540 500 300
+    /system/bin/input swipe 540 1900 540 500 300 2>/dev/null || true
     sleep 1.5
     if ! /system/bin/dumpsys window 2>/dev/null | grep -q 'mDreamingLockscreen=true'; then
       return 0
@@ -249,7 +287,7 @@ unlock_if_needed() {
   log "swipe unlock did not take — falling back to SystemUI restart"
   /system/bin/killall com.android.systemui >/dev/null 2>&1 || true
   sleep 2
-  /system/bin/input keyevent 224
+  /system/bin/input keyevent 224 2>/dev/null || true
   sleep 1
   # the SystemUI restart above is what puts the shade back up; collapse it now,
   # before the camera is hunted for
@@ -310,20 +348,80 @@ tap_line() {
   cx=$(printf '%s' "$line" | /system/xbin/busybox awk -F '\t' '{print $3}')
   cy=$(printf '%s' "$line" | /system/xbin/busybox awk -F '\t' '{print $4}')
   [ -n "$cx" ] && [ -n "$cy" ] || return 1
-  /system/bin/input tap "$cx" "$cy"
+  # Input injections get dropped under memory pressure with
+  # "Failure calling service input: Failed transaction (2147483646)". Swallowing
+  # that with `|| true` is what silently lost the shutter press on 2026-11-17: the
+  # run then waited for a preview that had never been requested. Retry the
+  # injection itself and report the real outcome.
+  _t=0
+  while [ "$_t" -lt 15 ]; do
+    /system/bin/input tap "$cx" "$cy" 2>/dev/null && return 0
+    sleep 2
+    _t=$((_t + 1))
+    # A busy InputManager (camera preview attaching) refuses injections for a few
+    # seconds. Keep the display awake through the wait so the retry is not fighting
+    # a sleeping screen at the same time.
+    if [ "$_t" = 5 ] || [ "$_t" = 10 ]; then
+      /system/bin/input keyevent 224 2>/dev/null || true
+    fi
+  done
+  log "tap at $cx,$cy rejected 15x"
+  return 1
+}
+
+# True when Snapchat owns the foreground. Used to gate Back: pressing Back from
+# outside Snapchat exits to the launcher and the send can never finish.
+snap_fg() {
+  /system/bin/dumpsys activity activities 2>/dev/null \
+    | /system/bin/grep -m1 topResumedActivity \
+    | grep -q "$SNAP_PKG"
+}
+
+# Tap, then require the expected page to actually appear; re-tap when the injection
+# was dropped. The shutter is the fragile one: a lost tap leaves the camera up and
+# no preview, which used to fall through to Back presses that exit the app.
+tap_until() {
+  _line=$1
+  _want=$2
+  _tries=${3:-5}
+  _n=0
+  while [ "$_n" -lt "$_tries" ]; do
+    tap_line "$_line" || true
+    _got=$(wait_landmark "$_want" 6 || true)
+    if [ -n "$_got" ]; then
+      printf '%s\n' "$_got"
+      return 0
+    fi
+    _n=$((_n + 1))
+    log "tap did not reach '$_want' ($_n/$_tries)"
+    _line=$(wait_landmark ready 5 || true)
+    [ -n "$_line" ] || return 1
+  done
+  return 1
 }
 
 queue_reason() {
   r=$1
   case "$r" in
   stuck:*|no\ *) return 0 ;;
+  # The input service can reject the first injection after deep sleep
+  # ("Failure calling service input: Failed transaction (2147483646)", measured
+  # 2026-11-17 05:00:01). That is transient and a later attempt inside the window
+  # succeeds, so it must queue. Before this it matched neither pattern, so
+  # `pending` was never written and the retry path in watch.sh could never fire —
+  # one hiccup on the cold wake cost the entire day. Same class for a dead display
+  # or a wedged uiautomator.
+  *"Failed transaction"*) return 0 ;;
+  *"Failure calling service"*) return 0 ;;
+  *"input service"*) return 0 ;;
+  *uiautomator*) return 0 ;;
   esac
   return 1
 }
 
 shot() {
   dest=$1
-  /system/bin/input keyevent 224
+  /system/bin/input keyevent 224 2>/dev/null || true
   /system/bin/screencap -p "$dest" || true
   sz=0
   [ -f "$dest" ] && sz=$(stat -c %s "$dest" 2>/dev/null || echo 0)
@@ -458,11 +556,20 @@ wait_landmark() {
     refresh || true
     info=$(/system/bin/dumpsys window | /system/bin/grep mDreamingLockscreen || true)
     echo "$info" | grep -q 'mDreamingLockscreen=true' && wake
+    # A sleeping display has NO focused window, so landmarks can never be found
+    # and injections are refused. This is the failure that cost the 05:00 runs:
+    # the screen slept mid-sequence. Wake and re-check before looking again.
+    if /system/bin/dumpsys power 2>/dev/null | grep -q 'mWakefulness=Asleep'; then
+      log "screen asleep mid-wait for $name — waking"
+      wake
+      sleep 1
+      refresh || true
+    fi
     dis=$(pick_dismiss || true)
     if [ -n "$dis" ]; then
       set -- $dis
       log "blocker dismiss: ${3:-sheet-button}"
-      /system/bin/input tap "$1" "$2"
+      /system/bin/input tap "$1" "$2" 2>/dev/null || true
       sleep 0.9
       stuck=0
       prev=""
@@ -485,7 +592,7 @@ wait_landmark() {
       if shade_up; then
         # a swipe-up is what clears it on an unlocked screen; the keyguard is
         # already down at this point in the cycle
-        /system/bin/input swipe 540 1900 540 500 300
+        /system/bin/input swipe 540 1900 540 500 300 2>/dev/null || true
         sleep 1
       fi
       if shade_up && [ "$shade_collapses" -ge 3 ]; then
@@ -513,9 +620,21 @@ wait_landmark() {
       stuck=0
       prev=""
       if [ "$backs" -lt 4 ]; then
+        # Gate Back on Snapchat owning the foreground. Measured 2026-11-17: four
+        # blind Backs on a screen where Back means "leave Snapchat" walked out to
+        # the launcher (topResumedActivity=com.android.launcher3) and the preview
+        # could never appear. Relaunch instead.
+        if ! snap_fg; then
+          log "not in snapchat — relaunching instead of back"
+          ensure_snap
+          sleep 1
+          refresh || true
+          i=$((i + 1))
+          continue
+        fi
         backs=$((backs + 1))
         log "back $backs/4 for $name"
-        /system/bin/input keyevent 4
+        /system/bin/input keyevent 4 2>/dev/null || true
         sleep 0.7
         refresh || true
         dis=$(pick_dismiss || true)
@@ -573,7 +692,7 @@ fi
 wake
 refresh || true
 unlock_if_needed || fail "lock: ${UNLOCK_ERR:-unknown}" 3
-/system/bin/settings put system show_touches 1
+/system/bin/settings put system show_touches 1 2>/dev/null || true
 ann=${SNAP_ANNOUNCE:-}
 if [ -n "$ann" ]; then
   /system/bin/am start -n "$ann" >/dev/null 2>&1 || true
@@ -596,8 +715,12 @@ if [ -z "$line" ]; then
 fi
 sendline=$(landmark_line sendto || true)
 if [ -z "$sendline" ]; then
-  tap_line "$line"
-  sendline=$(wait_landmark sendto 15 || true)
+  # Fire the shutter and require the preview. A dropped injection here used to
+  # fall straight through to wait_landmark, whose Back presses exited Snapchat.
+  # Let the camera surface settle first: taps issued while it is attaching get
+  # rejected by a busy InputManager ("Failed transaction").
+  sleep 2
+  sendline=$(tap_until "$line" sendto 5 || true)
 fi
 [ -n "$sendline" ] || fail "no Send To" 6
 tap_line "$sendline"
@@ -608,7 +731,7 @@ if [ -f "$BASE/secrets/to" ]; then
 fi
 if [ -n "$TO" ]; then
   log "recipient $TO"
-  /system/bin/input tap 540 140
+  /system/bin/input tap 540 140 2>/dev/null || true
   sleep 0.4
   /system/bin/input text "$(printf '%s' "$TO" | /system/bin/sed 's/ /%s/g')"
   sleep 1.2
