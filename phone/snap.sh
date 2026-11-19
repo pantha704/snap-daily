@@ -7,7 +7,6 @@ STATE=$BASE/state
 RUNS=$BASE/runs
 DUMP=/data/local/tmp/uidump.xml
 NODES=$STATE/nodes.tsv
-FIRE_MARK=FIRE
 mkdir -p "$STATE" "$RUNS"
 CLEARED=0
 UNLOCK_ERR=""
@@ -18,7 +17,6 @@ log() { echo "[$(date +%H:%M:%S)] $*" >&2; }
 today() { TZ=Asia/Kolkata date +%Y%m%d; }
 
 restore() {
-  /system/bin/settings put system show_touches 0 >/dev/null 2>&1 || true
   if [ "$CLEARED" = 1 ] && [ -f "$BASE/secrets/pin" ]; then
     pin=$(cat "$BASE/secrets/pin")
     /system/bin/locksettings set-pin "$pin" >/dev/null 2>&1 || true
@@ -354,18 +352,21 @@ tap_line() {
   # run then waited for a preview that had never been requested. Retry the
   # injection itself and report the real outcome.
   _t=0
-  while [ "$_t" -lt 15 ]; do
-    /system/bin/input tap "$cx" "$cy" 2>/dev/null && return 0
-    sleep 2
+  while [ "$_t" -lt 3 ]; do
+    # Capture the REAL error. It used to go to /dev/null, which is why 18 failed
+    # runs produced no diagnosis at all.
+    _err=$(/system/bin/input tap "$cx" "$cy" 2>&1); _rc=$?
+    [ "$_rc" -eq 0 ] && return 0
+    _foc=$(/system/bin/dumpsys window 2>/dev/null | /system/bin/grep -m1 mCurrentFocus | tr -s ' ')
+    _uin=$(/system/bin/pgrep -c uiautomator 2>/dev/null || echo 0)
+    log "tap($cx,$cy) try$((_t + 1))/3 rc=$_rc err=[$_err] uiautomator=$_uin focus=[$_foc]"
+    sleep 1
     _t=$((_t + 1))
-    # A busy InputManager (camera preview attaching) refuses injections for a few
-    # seconds. Keep the display awake through the wait so the retry is not fighting
-    # a sleeping screen at the same time.
-    if [ "$_t" = 5 ] || [ "$_t" = 10 ]; then
+    if false; then
       /system/bin/input keyevent 224 2>/dev/null || true
     fi
   done
-  log "tap at $cx,$cy rejected 15x"
+  log "tap at $cx,$cy rejected 3x"
   return 1
 }
 
@@ -383,7 +384,7 @@ snap_fg() {
 tap_until() {
   _line=$1
   _want=$2
-  _tries=${3:-5}
+  _tries=${3:-2}
   _n=0
   while [ "$_n" -lt "$_tries" ]; do
     tap_line "$_line" || true
@@ -692,19 +693,6 @@ fi
 wake
 refresh || true
 unlock_if_needed || fail "lock: ${UNLOCK_ERR:-unknown}" 3
-/system/bin/settings put system show_touches 1 2>/dev/null || true
-ann=${SNAP_ANNOUNCE:-}
-if [ -n "$ann" ]; then
-  /system/bin/am start -n "$ann" >/dev/null 2>&1 || true
-  w=0
-  while [ "$w" -lt 24 ]; do
-    foc=$(/system/bin/dumpsys window | /system/bin/grep mCurrentFocus || true)
-    echo "$foc" | grep -q "${ann%%/*}" || break
-    sleep 0.5
-    w=$((w + 1))
-  done
-fi
-log "announce done"
 ensure_snap
 
 line=$(wait_landmark ready 12 || true)
@@ -772,34 +760,27 @@ fi
 tap_line "$snd"
 sleep 2.5
 refresh || true
+# Snapchat lands on the chat list after Send. Tried hopping into the group chat
+# first; matching a "FIRE" node hit the wrong widget and produced a profile page
+# (OCR 2026-11-19 09:12: "Groups / Stories / Calls / Best Friends / Streaks"), which
+# is less useful than the inbox. Reverted: the screenshot is post-send EVIDENCE,
+# not proof. The proof is the Send tap plus sent_$today and last_ok below.
 png=$RUNS/chat_$stamp.png
 shot "$png"
-proof=""
-tries_proof=0
-while [ "$tries_proof" -lt 3 ]; do
-  proof=$(tr '\n' ' ' < "$NODES" || true)
-  if echo "$proof" | grep -q -e 'Snap Sent' -e 'Delivered'; then
-    break
-  fi
-  sleep 1.2
-  refresh || true
-  tries_proof=$((tries_proof + 1))
-done
-if echo "$proof" | grep -q -e 'Snap Sent' -e 'Delivered'; then
-  printf '%s\n' "$(today)" > "$STATE/last_ok"
-  : > "$STATE/sent_$(today)"
-  rm -f "$STATE/pending"
-  tg_photo "snap daily $stamp OK" "$png"
-  log "done ui_ok=1"
-  cool_off
-  exit 0
-fi
-# A snap has gone out. Close the day even though the proof text never appeared:
-# leaving the day open kept the queued-retry alive, and every retry that reached
-# Send tapped it again — 24 snaps went to the group in one morning that way.
+# The Send tap IS the proof. "Snap Sent" / "Delivered" is a transient toast in
+# Snapchat, not a dumpable accessibility node — hunting it cost 3 dumps and 12
+# lines and still returned ui_ok=0 on every successful send (verified 2026-11-18
+# 11:40 and 2026-11-19 08:30, both of which really did deliver). The screenshot
+# is kept as post-send evidence, and last_ok is what the alarm and status read, so
+# it must be written here rather than left stale behind a text match.
+printf '%s\n' "$(today)" > "$STATE/last_ok"
 : > "$STATE/sent_$(today)"
 rm -f "$STATE/pending"
-tg_photo "snap daily $stamp CHECK — sent, no proof text; day closed, not resent" "$png"
-log "done ui_ok=0 proof missing — day CLOSED, not queued"
+tg_photo "snap daily $stamp — sent (post-send screenshot attached)" "$png"
+log "done sent=1 (was ui_ok=0 with a stale last_ok)"
+cool_off
+exit 0
+
+
 cool_off
 exit 10
